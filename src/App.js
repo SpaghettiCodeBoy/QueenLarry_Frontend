@@ -3,23 +3,30 @@ import {
     ThemeProvider,
     CssBaseline,
     Box,
-    Drawer,
     IconButton,
+    useTheme,
+    useMediaQuery,
+    SwipeableDrawer,
 } from "@mui/material";
 import MapIcon from "@mui/icons-material/Map";
 import { theme } from "./components/MaritimeTheme";
 import ControlBar from "./components/ControlBar";
 import VideoPlayer from "./components/VideoPlayer";
 import JoystickArea from "./components/JoystickArea";
-import ThrottleGauge from "./components/ThrottleGauge";
 import ThrottleSlider from "./components/ThrottleSlider";
 import useControlSocket from "./hooks/useControlSocket";
 
-import { MapContainer, TileLayer, Marker } from "react-leaflet";
+import {
+    MapContainer,
+    TileLayer,
+    Marker,
+    useMap,
+} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import "leaflet-rotatedmarker"; // Plugin für Marker-Rotation
 
-// Leaflet-Icon-Fix für Standard-Marker
+// Standard-Marker Icons fixen
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
     iconRetinaUrl: require("leaflet/dist/images/marker-icon-2x.png"),
@@ -27,34 +34,65 @@ L.Icon.Default.mergeOptions({
     shadowUrl:      require("leaflet/dist/images/marker-shadow.png"),
 });
 
+// Pfeil-Icon als DivIcon (dreieckiger Zeiger)
+const ArrowIcon = L.divIcon({
+    html: `
+    <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <!-- Pfeilkopf -->
+      <path
+        d="M16 0 L32 32 L16 24 L0 32 Z"
+        fill="#007aff"
+        stroke="white"
+        stroke-width="2"
+      />
+    </svg>
+  `,
+    className: "",          // keine extra CSS-Klasse
+    iconSize: [32, 32],     // Größe des SVG
+    iconAnchor: [16, 24],   // Ankerpunkt: an der unteren Mitte des Pfeils
+});
+
+// Helfer für live Re-Centering
+function Recenter({ lat, lng }) {
+    const map = useMap();
+    useEffect(() => {
+        if (lat != null && lng != null) {
+            map.setView([lat, lng], map.getZoom());
+        }
+    }, [lat, lng, map]);
+    return null;
+}
+
 export default function App() {
     // Steuer-States
     const [steer, setSteer] = useState(0);
     const [throttle, setThrottle] = useState(0);
     const { send, connected } = useControlSocket("wss://pi.wizzwatts.com/input");
 
-    // Map-Drawer & GPS-Location
+    // GPS-Daten inkl. Kurs
+    const [gpsLocation, setGpsLocation] = useState({
+        lat: 0,
+        lng: 0,
+        course: 0,
+    });
+
+    // Mobile vs. Desktop erkennen
+    const muiTheme = useTheme();
+    const isMobile = useMediaQuery(muiTheme.breakpoints.down("sm"));
     const [mapOpen, setMapOpen] = useState(false);
-    const [gpsLocation, setGpsLocation] = useState({ lat: 0, lng: 0 });
 
-    // Debug: log App render and location
-    console.log("[DEBUG] App render - gpsLocation:", gpsLocation);
-
-    // GPS-WebSocket-Stream starten
+    // GPS WS
     useEffect(() => {
         const ws = new WebSocket("wss://pi.wizzwatts.com/gps");
         ws.onopen = () => console.log("[DEBUG] GPS WS connected");
         ws.onmessage = (evt) => {
-            console.log("[DEBUG] GPS raw data:", evt.data);
             try {
-                const data = JSON.parse(evt.data);
-                console.log("[DEBUG] GPS parsed data:", data);
-                if (data.lat && data.lng) {
-                    setGpsLocation({ lat: data.lat, lng: data.lng });
-                    console.log("[DEBUG] GPS state updated to:", { lat: data.lat, lng: data.lng });
+                const { lat, lng, course_deg } = JSON.parse(evt.data);
+                if (lat != null && lng != null) {
+                    setGpsLocation({ lat, lng, course: course_deg });
                 }
             } catch (e) {
-                console.error("[DEBUG] Failed to parse GPS JSON:", e);
+                console.error("GPS parse error", e);
             }
         };
         ws.onerror = (err) => console.error("[DEBUG] GPS WS error:", err);
@@ -62,117 +100,154 @@ export default function App() {
         return () => ws.close();
     }, []);
 
-    // Steuerdaten regelmäßig senden
+    // Steuer WS
     useEffect(() => {
         const thr = throttle >= 0 ? throttle / 100 : 0;
         const brk = throttle < 0 ? -throttle / 100 : 0;
-        const payload = { steer, thr, brk };
-        console.log("[DEBUG] Sending control payload:", payload);
-        send(payload);
+        send({ steer, thr, brk });
     }, [steer, throttle, send]);
 
     const handleSteer = useCallback((x) => setSteer(x), []);
     const handleThrottle = useCallback((v) => setThrottle(v), []);
 
+    const { lat, lng, course } = gpsLocation;
+
     return (
         <ThemeProvider theme={theme}>
             <CssBaseline />
 
-            {/* Kopfzeile mit ControlBar */}
-            <ControlBar throttle={throttle} wsConnected={connected} sendSound={send} />
+            {/* Kopfzeile */}
+            <ControlBar
+                throttle={throttle}
+                wsConnected={connected}
+                sendSound={send}
+            />
 
-            {/* Button zum Öffnen der Karte */}
-            <IconButton
-                onClick={() => {
-                    console.log("[DEBUG] Map drawer open");
-                    setMapOpen(true);
-                }}
-                sx={{
-                    position: "fixed",
-                    top: { xs: 72, sm: 80 },
-                    right: 16,
-                    zIndex: (t) => t.zIndex.drawer + 1,
-                    bgcolor: "background.paper",
-                }}
-            >
-                <MapIcon />
-            </IconButton>
-
-            {/* Drawer mit OpenStreetMap */}
-            <Drawer
-                anchor="right"
-                open={mapOpen}
-                onClose={() => {
-                    console.log("[DEBUG] Map drawer close");
-                    setMapOpen(false);
-                }}
-                PaperProps={{ sx: { width: { xs: "100%", sm: 400 }, height: "100%" } }}
-            >
-                <MapContainer
-                    center={[gpsLocation.lat, gpsLocation.lng]}
-                    zoom={16}
-                    style={{ width: "100%", height: "100%" }}
-                >
-                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                    <Marker position={[gpsLocation.lat, gpsLocation.lng]} />
-                </MapContainer>
-            </Drawer>
-
-            {/* ---------- Hauptbereich ---------- */}
-            {/* ---------- Hauptbereich ---------- */}
+            {/* Haupt-Layout */}
             <Box
                 sx={{
-                    height: { xs: "calc(100dvh - 56px)", sm: "calc(100dvh - 64px)" },
                     display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    bgcolor: "background.default",
-                    p: 2,
+                    flexDirection: isMobile ? "column" : "row",
+                    height: "100dvh",
                 }}
             >
-                {/* Video-Container (relativ) */}
+                {/* Video-Bereich */}
                 <Box
                     sx={{
-                        position: "relative",
-                        width: "100%",
-                        maxWidth: 1280,
-                        aspectRatio: "16/9",
-                        borderRadius: 2,
-                        overflow: "hidden",
-                        boxShadow: 3,
-                        bgcolor: "black",
+                        flex: isMobile ? "none" : 3,
+                        height: isMobile ? "50dvh" : "100%",
+                        p: 2,
+                        display: "flex",
+                        justifyContent: "center",
+                        alignItems: "center",
+                        bgcolor: "background.default",
                     }}
                 >
-                    {/* 1) Video */}
-                    <VideoPlayer />
-
-                    {/* 2) Joystick unten links */}
                     <Box
                         sx={{
-                            position: "absolute",
-                            bottom: 16,
-                            left: 16,
-                            pointerEvents: "auto",
+                            position: "relative",
+                            width: "100%",
+                            maxWidth: 1280,
+                            aspectRatio: "16/9",
+                            borderRadius: 2,
+                            overflow: "hidden",
+                            boxShadow: 3,
+                            bgcolor: "black",
                         }}
                     >
-                        <JoystickArea onSteer={handleSteer} />
-                    </Box>
+                        <VideoPlayer />
 
-                    {/* 3) Throttle rechts zentriert */}
-                    <Box
-                        sx={{
-                            position: "absolute",
-                            bottom: 16,
-                            right: 16,
-                            pointerEvents: "auto",
-                        }}
-                    >
+                        <Box
+                            sx={{
+                                position: "absolute",
+                                bottom: 16,
+                                left: 16,
+                                pointerEvents: "auto",
+                            }}
+                        >
+                            <JoystickArea onSteer={handleSteer} />
+                        </Box>
 
-                        <ThrottleSlider value={throttle} onChange={handleThrottle} />
+                        <Box
+                            sx={{
+                                position: "absolute",
+                                bottom: 16,
+                                right: 16,
+                                pointerEvents: "auto",
+                            }}
+                        >
+                            <ThrottleSlider
+                                value={throttle}
+                                onChange={handleThrottle}
+                            />
+                        </Box>
                     </Box>
                 </Box>
-            </Box>
 
+                {/* Karte */}
+                {isMobile ? (
+                    <>
+                        <IconButton
+                            onClick={() => setMapOpen(true)}
+                            sx={{
+                                position: "fixed",
+                                bottom: 16,
+                                right: 16,
+                                zIndex: (t) => t.zIndex.drawer + 1,
+                                bgcolor: "background.paper",
+                            }}
+                        >
+                            <MapIcon />
+                        </IconButton>
+                        <SwipeableDrawer
+                            anchor="bottom"
+                            open={mapOpen}
+                            onOpen={() => {}}
+                            onClose={() => setMapOpen(false)}
+                            PaperProps={{
+                                sx: { height: "50dvh" },
+                            }}
+                        >
+                            <MapContainer
+                                center={[lat, lng]}
+                                zoom={16}
+                                style={{ width: "100%", height: "100%" }}
+                            >
+                                <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                                <Recenter lat={lat} lng={lng} />
+                                <Marker
+                                    position={[lat, lng]}
+                                    icon={ArrowIcon}
+                                    rotationAngle={course}
+                                    rotationOrigin="center bottom"
+                                />
+                            </MapContainer>
+                        </SwipeableDrawer>
+                    </>
+                ) : (
+                    <Box
+                        sx={{
+                            flex: 1,
+                            height: "100%",
+                        }}
+                    >
+                        <MapContainer
+                            center={[lat, lng]}
+                            zoom={16}
+                            style={{ width: "100%", height: "100%" }}
+                        >
+                            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                            <Recenter lat={lat} lng={lng} />
+                            <Marker
+                                position={[lat, lng]}
+                                icon={ArrowIcon}
+                                rotationAngle={course}
+                                rotationOrigin="center bottom"
+                            />
+                        </MapContainer>
+                    </Box>
+                )}
+            </Box>
         </ThemeProvider>
     );
 }
