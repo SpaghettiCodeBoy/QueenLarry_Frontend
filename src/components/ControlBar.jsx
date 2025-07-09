@@ -221,6 +221,9 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
                         <MenuItem onClick={() => handleSoundSelect("alarm.wav")}>
                             <Typography>Alarm</Typography>
                         </MenuItem>
+                        <MenuItem onClick={() => handleSoundSelect("duck.wav")}>
+                            <Typography>Ente</Typography>
+                        </MenuItem>
                     </Menu>
 
                     {/* Recording status & buttons */}

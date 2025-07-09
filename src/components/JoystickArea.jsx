@@ -63,7 +63,15 @@ export default function JoystickArea({ onSteer }) {
 
     return (
         <Box sx={{ position: 'relative', width: '100%', height: '100%' }}>
-            <Box sx={{ position: 'absolute', bottom: -250, left: 24 }}>
+            <Box
+                sx={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    width: 150,     // feste Breite
+                    height: 150,    // feste Höhe
+                }}
+            >
                 <Joystick
                     size={150}
                     baseColor="rgba(255,255,255,0.15)"
