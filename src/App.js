@@ -11,7 +11,6 @@ import {
 import MapIcon from "@mui/icons-material/Map";
 import { theme } from "./components/MaritimeTheme";
 import ControlBar from "./components/ControlBar";
-import VideoPlayer from "./components/VideoPlayer";
 import JoystickArea from "./components/JoystickArea";
 import ThrottleSlider from "./components/ThrottleSlider";
 import useControlSocket from "./hooks/useControlSocket";
@@ -24,7 +23,8 @@ import {
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import "leaflet-rotatedmarker"; // Plugin für Marker-Rotation
+import "leaflet-rotatedmarker";
+import WebRTCPlayer from "./components/WebRTCPlayer"; // Plugin für Marker-Rotation
 
 // Standard-Marker Icons fixen
 delete L.Icon.Default.prototype._getIconUrl;
@@ -67,7 +67,10 @@ export default function App() {
     // Steuer-States
     const [steer, setSteer] = useState(0);
     const [throttle, setThrottle] = useState(0);
-    const { send, connected } = useControlSocket("wss://pi.wizzwatts.com/input");
+
+    // NEU: status & attempt aus dem Hook (connected bleibt für Abwärtskompatibilität)
+    const { send, connected, status, attempt } =
+        useControlSocket("wss://pi.wizzwatts.com/input");
 
     // GPS-Daten inkl. Kurs
     const [gpsLocation, setGpsLocation] = useState({
@@ -81,23 +84,41 @@ export default function App() {
     const isMobile = useMediaQuery(muiTheme.breakpoints.down("sm"));
     const [mapOpen, setMapOpen] = useState(false);
 
-    // GPS WS
+    // GPS WS mit Auto-Reconnect alle 3s
     useEffect(() => {
-        const ws = new WebSocket("wss://pi.wizzwatts.com/gps");
-        ws.onopen = () => console.log("[DEBUG] GPS WS connected");
-        ws.onmessage = (evt) => {
-            try {
-                const { lat, lng, course_deg } = JSON.parse(evt.data);
-                if (lat != null && lng != null) {
-                    setGpsLocation({ lat, lng, course: course_deg });
+        let ws;
+        let timer;
+        let shouldReconnect = true;
+
+        const connectGps = () => {
+            ws = new WebSocket("wss://pi.wizzwatts.com/gps");
+            ws.onopen = () => console.log("[DEBUG] GPS WS connected");
+            ws.onmessage = (evt) => {
+                try {
+                    const { lat, lng, course_deg } = JSON.parse(evt.data);
+                    if (lat != null && lng != null) {
+                        setGpsLocation({ lat, lng, course: course_deg });
+                    }
+                } catch (e) {
+                    console.error("GPS parse error", e);
                 }
-            } catch (e) {
-                console.error("GPS parse error", e);
-            }
+            };
+            ws.onerror = () => {
+                // Close triggert onclose -> Reconnect
+                try { ws.close(); } catch {}
+            };
+            ws.onclose = () => {
+                console.log("[DEBUG] GPS WS closed – retrying in 3s");
+                if (shouldReconnect) timer = setTimeout(connectGps, 3000);
+            };
         };
-        ws.onerror = (err) => console.error("[DEBUG] GPS WS error:", err);
-        ws.onclose = () => console.log("[DEBUG] GPS WS closed");
-        return () => ws.close();
+
+        connectGps();
+        return () => {
+            shouldReconnect = false;
+            if (timer) clearTimeout(timer);
+            if (ws) try { ws.close(); } catch {}
+        };
     }, []);
 
     // Steuer WS
@@ -120,6 +141,8 @@ export default function App() {
             <ControlBar
                 throttle={throttle}
                 wsConnected={connected}
+                wsStatus={status}       // NEU: 'open' | 'connecting' | 'closed'
+                wsAttempts={attempt}    // NEU: Reconnect-Zähler
                 sendSound={send}
             />
 
@@ -155,7 +178,7 @@ export default function App() {
                             bgcolor: "black",
                         }}
                     >
-                        <VideoPlayer />
+                        <WebRTCPlayer/>
 
                         <Box
                             sx={{

@@ -23,21 +23,38 @@ import StopIcon from "@mui/icons-material/Stop";
 import FlashOnIcon from "@mui/icons-material/FlashOn";
 import VideoLibraryIcon from "@mui/icons-material/VideoLibrary";
 import CloseIcon from "@mui/icons-material/Close";
+import InvertColorsIcon from "@mui/icons-material/InvertColors"; // Tropfen-Symbol
+import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 
 import VideoGallery from "./VideoGallery";  // ggf. Pfad anpassen
 
 // feste API-Basis des Pi
 const API_BASE = "https://pi.wizzwatts.com";
 
+// NEU: Video-WebRTC-API (Recording)
+const VIDEO_BASE = "https://video.wizzwatts.com";
+
 // Slide-Transition für den Dialog
 const Transition = React.forwardRef(function Transition(props, ref) {
     return <Slide direction="up" ref={ref} {...props} />;
 });
 
-export default function ControlBar({ throttle, wsConnected, sendSound }) {
+export default function ControlBar({ throttle, wsConnected, wsStatus = "closed", wsAttempts = 0, sendSound }) {
     // Slider-Werte
     const [deckValue, setDeckValue] = useState(0);
     const [navValue, setNavValue] = useState(0);
+
+    const statusColor =
+        wsStatus === "open" ? "success.main" :
+            wsStatus === "connecting" ? "warning.main" :
+                "error.main";
+    const statusLabel =
+        wsStatus === "open" ? "Verbunden" :
+            wsStatus === "connecting" ? `Verbinde…` :
+                `Getrennt – erneuter Versuch alle 3 s (${wsAttempts})`;
+
+    const [floodValue, setFloodValue] = useState(0);
+    const [floodAnchorEl, setFloodAnchorEl] = useState(null);
 
     // Popovers
     const [deckAnchorEl, setDeckAnchorEl] = useState(null);
@@ -81,6 +98,17 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
         }).catch(console.error);
     };
 
+    const openFloodPopover  = (e) => setFloodAnchorEl(e.currentTarget);
+    const closeFloodPopover = ()  => setFloodAnchorEl(null);
+    const handleFloodChange = (e, v) => {
+        setFloodValue(v);
+        fetch(`${API_BASE}/light/flood`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ intensity: v }),
+        }).catch(console.error);
+    };
+
     // ---- Pin3 mode trigger ----
     const triggerPin3Mode = () => {
         fetch(`${API_BASE}/light/mode`, { method: "POST" })
@@ -99,14 +127,18 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
     // ---- Recording ----
     const startRec = () => {
         if (isRecording || processing) return;
-        fetch(`${API_BASE}/record/start`, { method: "POST" })
+        fetch(`${VIDEO_BASE}/record/start`, { method: "POST" })
             .then(() => {
                 setIsRecording(true);
                 setElapsed(0);
                 setSnackbarMsg("Aufnahme gestartet");
                 setSnackbarOpen(true);
             })
-            .catch(console.error);
+            .catch((err) => {
+                console.error(err);
+                setSnackbarMsg("Aufnahme konnte nicht gestartet werden");
+                setSnackbarOpen(true);
+            });
     };
     const stopRec = () => {
         if (!isRecording) return;
@@ -115,9 +147,11 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
         setProcessing(true);
         setSnackbarMsg("Video wird verarbeitet...");
         setSnackbarOpen(true);
-        fetch(`${API_BASE}/record/stop`, { method: "POST" })
+
+        fetch(`${VIDEO_BASE}/record/stop`, { method: "POST" })
             .then(() => window.location.reload())
-            .catch(() => {
+            .catch((err) => {
+                console.error(err);
                 setProcessing(false);
                 setSnackbarMsg("Fehler beim Verarbeiten");
                 setSnackbarOpen(true);
@@ -143,6 +177,12 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
         <>
             <AppBar position="fixed" color="primary" elevation={6} sx={{ zIndex: (t) => t.zIndex.drawer + 1 }}>
                 <Toolbar sx={{ justifyContent: "center", gap: 2 }}>
+                    {/* --- WS Statuspunkt --- */}
+                    <Tooltip title={statusLabel}>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                            <FiberManualRecordIcon fontSize="small" sx={{ color: statusColor }} />
+                        </Box>
+                    </Tooltip>
                     {/* Deck icon + popover */}
                     <Tooltip title="Deck-Beleuchtung">
                         <IconButton onClick={openDeckPopover}>
@@ -161,6 +201,32 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
                                 orientation="vertical"
                                 value={deckValue}
                                 onChange={handleDeckChange}
+                                min={0}
+                                max={255}
+                                size="small"
+                                sx={{ height: 150 }}
+                            />
+                        </Box>
+                    </Popover>
+
+                    {/* Flood-Light icon + popover */}
+                    <Tooltip title="Flutlicht">
+                        <IconButton onClick={openFloodPopover}>
+                            <InvertColorsIcon />
+                        </IconButton>
+                    </Tooltip>
+                    <Popover
+                        open={Boolean(floodAnchorEl)}
+                        anchorEl={floodAnchorEl}
+                        onClose={closeFloodPopover}
+                        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+                        transformOrigin={{ vertical: "top", horizontal: "center" }}
+                    >
+                        <Box p={1}>
+                            <Slider
+                                orientation="vertical"
+                                value={floodValue}
+                                onChange={handleFloodChange}
                                 min={0}
                                 max={255}
                                 size="small"
@@ -226,7 +292,9 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
                         </MenuItem>
                     </Menu>
 
-                    {/* Recording status & buttons */}
+                    {/* Flood-Light icon + popover
+
+
                     {isRecording && <Typography sx={{ ml: 2 }}>Aufnahme: {formatTime(elapsed)}</Typography>}
                     {processing && <Typography sx={{ ml: 2 }}>Video wird verarbeitet...</Typography>}
 
@@ -245,13 +313,15 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
             </span>
                     </Tooltip>
 
-                    {/* Video gallery */}
+
                     <Tooltip title="Aufzeichnungen">
                         <IconButton onClick={toggleGallery}>
                             <VideoLibraryIcon />
                         </IconButton>
                     </Tooltip>
+                    */}
                 </Toolbar>
+
             </AppBar>
 
             {/* Video Gallery Dialog */}
@@ -270,6 +340,7 @@ export default function ControlBar({ throttle, wsConnected, sendSound }) {
                     <VideoGallery />
                 </Box>
             </Dialog>
+
 
             {/* Snackbar */}
             <Snackbar open={snackbarOpen} message={snackbarMsg} autoHideDuration={3000} onClose={handleSnackbarClose} />
